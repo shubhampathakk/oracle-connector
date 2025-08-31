@@ -18,11 +18,18 @@ def run():
 
     # Get AWS credentials from Secret Manager
     try:
-        config["aws_access_key"] = secret_manager.get_password(config["aws_access_key_secret"])
-        config["aws_secret_key"] = secret_manager.get_password(config["aws_secret_key_secret"])
+    # Get AWS credentials from Secret Manager
+        aws_access_key, aws_secret_key = secret_manager.SecretManager.get_aws_credentials(
+            config["target_project_id"], 
+            config["aws_credentials_secret"]  # You'll need to add this parameter
+        )
+        config["aws_access_key_id"] = aws_access_key
+        config["aws_secret_access_key"] = aws_secret_key
     except Exception as ex:
-        print(f"Error getting AWS credentials: {ex}")
+        print(ex)
+        print("Exiting")
         sys.exit()
+
 
     # Build output filename and folder
     currentDate = datetime.now()

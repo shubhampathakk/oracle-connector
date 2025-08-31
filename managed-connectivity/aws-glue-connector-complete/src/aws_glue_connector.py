@@ -1,74 +1,51 @@
-"""AWS Glue Data Catalog connector using boto3."""
 import boto3
-from typing import Dict, List
-import logging
-
-logger = logging.getLogger(__name__)
+import re
 
 class AWSGlueConnector:
-    """Reads metadata from AWS Glue Data Catalog."""
+    def __init__(self, aws_access_key_id, aws_secret_access_key, aws_region):
+        # Clean and validate credentials
+        self.access_key_id = self._clean_credential(aws_access_key_id)
+        self.secret_access_key = self._clean_credential(aws_secret_access_key)
+        self.region = aws_region.strip()
+        
+        try:
+            self.__glue_client = boto3.client(
+                'glue',
+                region_name=self.region,
+                aws_access_key_id=self.access_key_id,
+                aws_secret_access_key=self.secret_access_key
+            )
+        except Exception as e:
+            raise ValueError(f"Failed to create AWS Glue client: {e}")
+    
+    def _clean_credential(self, credential):
+        """Clean and validate credential string"""
+        if not credential:
+            raise ValueError("Empty credential provided")
+        
+        # Remove any whitespace and control characters
+        cleaned = re.sub(r'[\r\n\t\s]', '', credential)
+        
+        # Validate credential format (basic check)
+        if not cleaned or len(cleaned) < 10:
+            raise ValueError("Invalid credential format")
+            
+        return cleaned
 
-    def __init__(self, config: Dict[str, str]):
-        self._config = config
-        self._glue_client = boto3.client(
-            'glue',
-            region_name=config['aws_region'],
-            aws_access_key_id=config['aws_access_key'],
-            aws_secret_access_key=config['aws_secret_key']
-        )
-
-    def get_databases(self) -> List[Dict]:
-        """Get all databases from Glue Data Catalog."""
-        databases = []
-        paginator = self._glue_client.get_paginator('get_databases')
-        
-        for page in paginator.paginate():
-            for db in page['DatabaseList']:
-                db_name = db['Name']
-                
-                # Apply include/exclude filters
-                if self._should_include_database(db_name):
-                    databases.append({
-                        'Name': db_name,
-                        'Description': db.get('Description', ''),
-                        'LocationUri': db.get('LocationUri', ''),
-                        'Parameters': db.get('Parameters', {})
-                    })
-        
-        return databases
-
-    def get_tables(self, database_name: str) -> List[Dict]:
-        """Get all tables in a database."""
-        tables = []
-        paginator = self._glue_client.get_paginator('get_tables')
-        
-        for page in paginator.paginate(DatabaseName=database_name):
-            for table in page['TableList']:
-                table_data = {
-                    'Name': table['Name'],
-                    'Description': table.get('Description', ''),
-                    'DatabaseName': database_name,
-                    'StorageDescriptor': table.get('StorageDescriptor', {}),
-                    'Parameters': table.get('Parameters', {}),
-                    'TableType': table.get('TableType', 'EXTERNAL_TABLE')
-                }
-                tables.append(table_data)
-        
-        return tables
-
-    def _should_include_database(self, db_name: str) -> bool:
-        """Check if database should be included based on include/exclude filters."""
-        include_databases = self._config.get('include_databases')
-        exclude_databases = self._config.get('exclude_databases')
-        
-        if include_databases:
-            include_list = [db.strip() for db in include_databases.split(',')]
-            if db_name not in include_list:
-                return False
-                
-        if exclude_databases:
-            exclude_list = [db.strip() for db in exclude_databases.split(',')]
-            if db_name in exclude_list:
-                return False
-                
-        return True
+    def get_databases(self, include_databases=None):
+        """Fetches metadata from AWS Glue Data Catalog."""
+        if include_databases is None:
+            include_databases = []
+            
+        metadata = {}
+        try:
+            paginator = self.__glue_client.get_paginator('get_databases')
+            for page in paginator.paginate():
+                for db in page['DatabaseList']:
+                    db_name = db['Name']
+                    if not include_databases or db_name in include_databases:
+                        metadata[db_name] = self._get_tables(db_name)
+        except Exception as e:
+            raise RuntimeError(f"Failed to get databases from AWS Glue: {e}")
+            
+        return metadata
