@@ -1,162 +1,117 @@
-"""Creates entries for AWS Glue metadata."""
-import json
-from typing import Dict, List
-from src.constants import EntryType, SOURCE_TYPE
-from src import name_builder as nb
+import re
+from src.constants import EntryType, SOURCE_TYPE, LINEAGE_ASPECT_KEY
+import src.name_builder as nb
 
-def build_catalog_entry(config: Dict[str, str]) -> Dict:
-    """Build AWS Glue catalog entry."""
-    entry_type = EntryType.CATALOG
-    entry_aspect_name = nb.create_entry_aspect_name(config, entry_type)
-    
+# (choose_metadata_type and build_database_entry functions remain the same)
+def choose_metadata_type(data_type: str):
+    """Choose the metadata type based on AWS Glue native type."""
+    data_type = data_type.lower()
+    if data_type in ['integer', 'int', 'smallint', 'tinyint', 'bigint', 'long', 'float', 'double', 'decimal']:
+        return "NUMBER"
+    if 'char' in data_type or 'string' in data_type:
+        return "STRING"
+    if data_type in ['binary', 'array', 'struct', 'map']:
+        return "BYTES"
+    if data_type == 'timestamp':
+        return "TIMESTAMP"
+    if data_type == 'date':
+        return "DATE"
+    return "OTHER"
+
+def build_database_entry(config, db_name):
+    """Builds a database entry."""
+    entry_type = EntryType.DATABASE
+    full_entry_type = entry_type.value.format(
+        project=config["project_id"],
+        location=config["location_id"])
+
     entry = {
-        "name": nb.create_name(config, entry_type),
-        "entry_type": entry_type.value.format(
-            project=config["target_project_id"],
-            location=config["target_location_id"]
-        ),
-        "fully_qualified_name": nb.create_fqn(config, entry_type),
-        "parent_entry": "",
+        "name": nb.create_name(config, entry_type, db_name),
+        "fully_qualified_name": nb.create_fqn(config, entry_type, db_name),
+        "entry_type": full_entry_type,
         "entry_source": {
-            "display_name": "AWS Glue Data Catalog",
+            "display_name": db_name,
             "system": SOURCE_TYPE
         },
-        "aspects": {
-            entry_aspect_name: {
-                "aspect_type": entry_aspect_name,
-                "data": {}
-            }
-        }
+        "aspects": {}
     }
-    
     return {
         "entry": entry,
-        "aspect_keys": [entry_aspect_name],
+        "aspect_keys": [],
         "update_mask": ["aspects"]
     }
 
-def build_database_entries(config: Dict[str, str], databases: List[Dict]) -> List[Dict]:
-    """Build database entries from AWS Glue databases."""
-    entries = []
-    entry_type = EntryType.DATABASE
-    entry_aspect_name = nb.create_entry_aspect_name(config, entry_type)
-    
-    for db in databases:
-        db_name = db['Name']
-        entry = {
-            "name": nb.create_name(config, entry_type, db_name),
-            "entry_type": entry_type.value.format(
-                project=config["target_project_id"],
-                location=config["target_location_id"]
-            ),
-            "fully_qualified_name": nb.create_fqn(config, entry_type, db_name),
-            "parent_entry": nb.create_parent_name(config, entry_type),
-            "entry_source": {
-                "display_name": db_name,
-                "system": SOURCE_TYPE
-            },
-            "aspects": {
-                entry_aspect_name: {
-                    "aspect_type": entry_aspect_name,
-                    "data": {
-                        "description": db.get('Description', ''),
-                        "location_uri": db.get('LocationUri', ''),
-                        "parameters": db.get('Parameters', {})
-                    }
-                }
-            }
-        }
-        
-        entries.append({
-            "entry": entry,
-            "aspect_keys": [entry_aspect_name],
-            "update_mask": ["aspects"]
-        })
-    
-    return entries
+def build_dataset_entry(config, db_name, table_info, job_lineage):
+    """Builds a table or view entry with detailed schema and lineage."""
+    table_name = table_info['Name']
+    table_type = table_info.get('TableType')
 
-def build_table_entries(config: Dict[str, str], tables: List[Dict]) -> List[Dict]:
-    """Build table entries from AWS Glue tables."""
-    entries = []
-    entry_type = EntryType.TABLE
-    entry_aspect_name = nb.create_entry_aspect_name(config, entry_type)
-    schema_aspect_name = "dataplex-types.global.schema"
+    entry_type = EntryType.VIEW if table_type == 'VIRTUAL_VIEW' else EntryType.TABLE
     
-    for table in tables:
-        table_name = table['Name']
-        db_name = table['DatabaseName']
-        
-        # Build schema fields
-        fields = []
-        storage_descriptor = table.get('StorageDescriptor', {})
-        columns = storage_descriptor.get('Columns', [])
-        
-        for column in columns:
-            field = {
-                "name": column['Name'],
-                "dataType": column.get('Type', 'string'),
-                "metadataType": map_glue_type_to_metadata_type(column.get('Type', 'string')),
+    # --- Build Schema Aspect ---
+    schema_key = "dataplex-types.global.schema"
+    columns = []
+    if 'StorageDescriptor' in table_info and 'Columns' in table_info['StorageDescriptor']:
+        for col in table_info['StorageDescriptor']['Columns']:
+            columns.append({
+                "name": col.get("Name"),
+                "dataType": col.get("Type"),
                 "mode": "NULLABLE",
-                "description": column.get('Comment', '')
-            }
-            fields.append(field)
-        
-        entry = {
-            "name": nb.create_name(config, entry_type, db_name, table_name),
-            "entry_type": entry_type.value.format(
-                project=config["target_project_id"],
-                location=config["target_location_id"]
-            ),
-            "fully_qualified_name": nb.create_fqn(config, entry_type, db_name, table_name),
-            "parent_entry": nb.create_parent_name(config, entry_type, db_name),
-            "entry_source": {
-                "display_name": table_name,
-                "system": SOURCE_TYPE
-            },
-            "aspects": {
-                schema_aspect_name: {
-                    "aspect_type": schema_aspect_name,
-                    "data": {
-                        "fields": fields
-                    }
-                },
-                entry_aspect_name: {
-                    "aspect_type": entry_aspect_name,
-                    "data": {
-                        "description": table.get('Description', ''),
-                        "table_type": table.get('TableType', 'EXTERNAL_TABLE'),
-                        "location": storage_descriptor.get('Location', ''),
-                        "input_format": storage_descriptor.get('InputFormat', ''),
-                        "output_format": storage_descriptor.get('OutputFormat', ''),
-                        "parameters": table.get('Parameters', {})
-                    }
+                "metadataType": choose_metadata_type(col.get("Type", ""))
+            })
+
+    aspects = {
+        schema_key: {
+            "aspect_type": schema_key,
+            "data": { "fields": columns }
+        }
+    }
+    aspect_keys = [schema_key]
+
+    # --- Build Lineage Aspect ---
+    source_assets = []
+    # Lineage from Views
+    if entry_type == EntryType.VIEW and 'ViewOriginalText' in table_info:
+        sql = table_info['ViewOriginalText']
+        source_tables = re.findall(r'(?:FROM|JOIN)\s+`?(\w+)`?', sql, re.IGNORECASE)
+        source_assets.extend(set(source_tables))
+
+    # Lineage from ETL Jobs
+    if table_name in job_lineage:
+        source_assets.extend(job_lineage[table_name])
+    
+    if source_assets:
+        lineage_aspect = {
+            LINEAGE_ASPECT_KEY: {
+                "aspect_type": LINEAGE_ASPECT_KEY,
+                "data": {
+                    "links": [{
+                        "source": { "fully_qualified_name": nb.create_fqn(config, EntryType.TABLE, db_name, src) },
+                        "target": { "fully_qualified_name": nb.create_fqn(config, entry_type, db_name, table_name) }
+                    } for src in set(source_assets)]
                 }
             }
         }
-        
-        entries.append({
-            "entry": entry,
-            "aspect_keys": [schema_aspect_name, entry_aspect_name],
-            "update_mask": ["aspects"]
-        })
-    
-    return entries
+        aspects.update(lineage_aspect)
+        aspect_keys.append(LINEAGE_ASPECT_KEY)
 
-def map_glue_type_to_metadata_type(glue_type: str) -> str:
-    """Map AWS Glue data types to Dataplex metadata types."""
-    glue_type_lower = glue_type.lower()
-    
-    if glue_type_lower in ['bigint', 'int', 'smallint', 'tinyint', 'double', 'float', 'decimal']:
-        return "NUMBER"
-    elif glue_type_lower in ['string', 'char', 'varchar']:
-        return "STRING"
-    elif glue_type_lower in ['boolean']:
-        return "BOOLEAN"
-    elif glue_type_lower in ['date']:
-        return "DATE"
-    elif glue_type_lower in ['timestamp']:
-        return "TIMESTAMP"
-    elif glue_type_lower in ['binary']:
-        return "BYTES"
-    else:
-        return "OTHER"
+    # --- Build General Entry Info ---
+    full_entry_type = entry_type.value.format(
+        project=config["project_id"],
+        location=config["location_id"])
+    parent_name = nb.create_parent_name(config, entry_type, db_name)
+
+    entry = {
+        "name": nb.create_name(config, entry_type, db_name, table_name),
+        "fully_qualified_name": nb.create_fqn(config, entry_type, db_name, table_name),
+        "parent_entry": parent_name,
+        "entry_type": full_entry_type,
+        "entry_source": { "display_name": table_name, "system": SOURCE_TYPE },
+        "aspects": aspects
+    }
+
+    return {
+        "entry": entry,
+        "aspect_keys": list(set(aspect_keys)),
+        "update_mask": ["aspects"]
+    }
