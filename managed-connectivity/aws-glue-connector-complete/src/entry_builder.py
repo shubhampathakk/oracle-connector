@@ -1,8 +1,7 @@
 import re
-from src.constants import EntryType, SOURCE_TYPE, LINEAGE_ASPECT_KEY
+from src.constants import *
 import src.name_builder as nb
 
-# (choose_metadata_type and build_database_entry functions remain the same)
 def choose_metadata_type(data_type: str):
     """Choose the metadata type based on AWS Glue native type."""
     data_type = data_type.lower()
@@ -19,37 +18,39 @@ def choose_metadata_type(data_type: str):
     return "OTHER"
 
 def build_database_entry(config, db_name):
-    """Builds a database entry."""
+    """Builds a database entry, mimicking the successful Oracle format."""
     entry_type = EntryType.DATABASE
     full_entry_type = entry_type.value.format(
         project=config["project_id"],
         location=config["location_id"])
 
+    aspects = {
+        DATABASE_ASPECT_KEY: {
+            "aspect_type": DATABASE_ASPECT_KEY,
+            "data": {}
+        }
+    }
+
     entry = {
         "name": nb.create_name(config, entry_type, db_name),
         "fully_qualified_name": nb.create_fqn(config, entry_type, db_name),
         "entry_type": full_entry_type,
-        "entry_source": {
-            "display_name": db_name,
-            "system": SOURCE_TYPE
-        },
-        "aspects": {}
+        "aspects": aspects
     }
     return {
         "entry": entry,
-        "aspect_keys": [],
-        "update_mask": ["aspects"]
+        "aspect_keys": [DATABASE_ASPECT_KEY],
+        "update_mask": "aspects"
     }
 
 def build_dataset_entry(config, db_name, table_info, job_lineage):
-    """Builds a table or view entry with detailed schema and lineage."""
+    """Builds a table or view entry, mimicking the successful Oracle format."""
     table_name = table_info['Name']
     table_type = table_info.get('TableType')
 
     entry_type = EntryType.VIEW if table_type == 'VIRTUAL_VIEW' else EntryType.TABLE
     
     # --- Build Schema Aspect ---
-    schema_key = "dataplex-types.global.schema"
     columns = []
     if 'StorageDescriptor' in table_info and 'Columns' in table_info['StorageDescriptor']:
         for col in table_info['StorageDescriptor']['Columns']:
@@ -61,29 +62,39 @@ def build_dataset_entry(config, db_name, table_info, job_lineage):
             })
 
     aspects = {
-        schema_key: {
-            "aspect_type": schema_key,
+        SCHEMA_ASPECT_KEY: {
+            "aspect_type": SCHEMA_ASPECT_PATH,
             "data": { "fields": columns }
         }
     }
-    aspect_keys = [schema_key]
+    aspect_keys = [SCHEMA_ASPECT_KEY]
+
+    # --- Add Custom Marker Aspect ---
+    if entry_type == EntryType.TABLE:
+        aspects[TABLE_ASPECT_KEY] = {"aspect_type": TABLE_ASPECT_KEY, "data": {}}
+        aspect_keys.append(TABLE_ASPECT_KEY)
+    elif entry_type == EntryType.VIEW:
+        aspects[VIEW_ASPECT_KEY] = {"aspect_type": VIEW_ASPECT_KEY, "data": {}}
+        aspect_keys.append(VIEW_ASPECT_KEY)
 
     # --- Build Lineage Aspect ---
     source_assets = []
-    # Lineage from Views
     if entry_type == EntryType.VIEW and 'ViewOriginalText' in table_info:
         sql = table_info['ViewOriginalText']
         source_tables = re.findall(r'(?:FROM|JOIN)\s+`?(\w+)`?', sql, re.IGNORECASE)
         source_assets.extend(set(source_tables))
 
-    # Lineage from ETL Jobs
     if table_name in job_lineage:
         source_assets.extend(job_lineage[table_name])
     
     if source_assets:
+        full_lineage_aspect_path = LINEAGE_ASPECT_PATH.format(
+            project=config["project_id"],
+            location=config["location_id"]
+        )
         lineage_aspect = {
             LINEAGE_ASPECT_KEY: {
-                "aspect_type": LINEAGE_ASPECT_KEY,
+                "aspect_type": full_lineage_aspect_path,
                 "data": {
                     "links": [{
                         "source": { "fully_qualified_name": nb.create_fqn(config, EntryType.TABLE, db_name, src) },
@@ -113,5 +124,5 @@ def build_dataset_entry(config, db_name, table_info, job_lineage):
     return {
         "entry": entry,
         "aspect_keys": list(set(aspect_keys)),
-        "update_mask": ["aspects"]
+        "update_mask": "aspects"
     }
