@@ -2,6 +2,7 @@ from src.aws_glue_connector import AWSGlueConnector
 from src.cmd_reader import get_config
 import src.entry_builder as eb
 from src.gcs_uploader import GCSUploader
+import os
 
 def run():
     """Connects to AWS Glue, builds and uploads the metadata."""
@@ -11,6 +12,9 @@ def run():
     aws_region = config['aws_region']
     gcs_bucket = config['gcs_bucket']
     project_id = config['project_id']
+    
+    # --- CHANGE 1: Get the output folder from the config ---
+    output_folder = config.get('output_folder')
 
     # Connect to AWS Glue
     glue_connector = AWSGlueConnector(aws_access_key_id, aws_secret_access_key, aws_region)
@@ -29,6 +33,14 @@ def run():
 
     # Upload to GCS
     gcs_uploader = GCSUploader(project_id, gcs_bucket)
-    gcs_uploader.upload_entries(all_import_items)
+    
+    # --- CHANGE 2: Pass the new variables to the uploader ---
+    gcs_uploader.upload_entries(
+        entries=all_import_items,
+        aws_region=aws_region,
+        output_folder=output_folder
+    )
 
-    print(f"Successfully uploaded metadata for {len(databases)} databases to GCS bucket: {gcs_bucket}")
+    # Construct the full path for the log message
+    final_path = os.path.join(output_folder, f"aws-glue-output-{aws_region}.jsonl") if output_folder else f"aws-glue-output-{aws_region}.jsonl"
+    print(f"Successfully uploaded metadata for {len(databases)} databases to: gs://{gcs_bucket}/{final_path}")
