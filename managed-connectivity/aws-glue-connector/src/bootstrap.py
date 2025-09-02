@@ -1,100 +1,46 @@
-"""The entrypoint of a pipeline."""
-from typing import Dict
-import sys
-
-from datetime import datetime
-
-from src.constants import EntryType
-from src.constants import SOURCE_TYPE
-from src import cmd_reader
-from src import secret_manager
-from src import entry_builder
-from src import gcs_uploader
-from src import top_entry_builder
-from src.oracle_connector import OracleConnector
-
-def write_jsonl(output_file, json_strings):
-    """Writes a list of string to the file in JSONL format."""
-
-    # For simplicity, dataset is written into the one file. But it is not
-    # mandatory, and the order doesn't matter for Import API.
-    # The PySpark itself could dump entries into many smaller JSONL files.
-    # Due to performance, it's recommended to dump to many smaller files.
-    for string in json_strings:
-        output_file.write(string + "\n")
-
-
-def process_dataset(
-    connector: OracleConnector,
-    config: Dict[str, str],
-    schema_name: str,
-    entry_type: EntryType,
-):
-    """Builds dataset and converts it to jsonl."""
-    df_raw = connector.get_dataset(schema_name, entry_type)
-    df = entry_builder.build_dataset(config, df_raw, schema_name, entry_type)
-    return df.toJSON().collect()
-
+from src.aws_glue_connector import AWSGlueConnector
+from src.cmd_reader import get_config
+import src.entry_builder as eb
+from src.gcs_uploader import GCSUploader
+import os
 
 def run():
-    """Runs a pipeline."""
-    config = cmd_reader.read_args()
+    """Connects to AWS Glue, builds and uploads the metadata."""
+    config = get_config()
+    aws_access_key_id = config['aws_access_key_id']
+    aws_secret_access_key = config['aws_secret_access_key']
+    aws_region = config['aws_region']
+    gcs_bucket = config['gcs_bucket']
+    project_id = config['project_id']
+    
+    # --- CHANGE 1: Get the output folder from the config ---
+    output_folder = config.get('output_folder')
 
-    if not gcs_uploader.checkDestination(config):
-        print("Exiting")
-        sys.exit()
+    # Connect to AWS Glue
+    glue_connector = AWSGlueConnector(aws_access_key_id, aws_secret_access_key, aws_region)
+    
+    # Fetch metadata and lineage
+    databases = glue_connector.get_databases()
+    job_lineage = glue_connector.get_lineage_info()
 
-    """Build the output folder name and filename"""
-    currentDate = datetime.now()
-    FOLDERNAME = f"{SOURCE_TYPE}/{currentDate.year}{currentDate.month}{currentDate.day}-{currentDate.hour}{currentDate.minute}{currentDate.second}"
-    """Build the default output filename"""
-    FILENAME = SOURCE_TYPE + "-output.jsonl"
+    # Build entries
+    all_import_items = []
+    for db_name, tables in databases.items():
+        all_import_items.append(eb.build_database_entry(config, db_name))
+        
+        for table_info in tables:
+            all_import_items.append(eb.build_dataset_entry(config, db_name, table_info, job_lineage))
 
-    print(f"output folder is {config['output_bucket']} {FOLDERNAME}")
+    # Upload to GCS
+    gcs_uploader = GCSUploader(project_id, gcs_bucket)
+    
+    # --- CHANGE 2: Pass the new variables to the uploader ---
+    gcs_uploader.upload_entries(
+        entries=all_import_items,
+        aws_region=aws_region,
+        output_folder=output_folder
+    )
 
-    try:
-        config["password"] = secret_manager.get_password(config["password_secret"])
-    except Exception as ex:
-        print(ex)
-        print("Exiting")
-        sys.exit()
-
-    connector = OracleConnector(config)
-    schemas_count = 0
-    entries_count = 0
-
-
-    # Build the output file name from connection details
-    if config['sid'] and len(config['sid']) > 0:
-        FILENAME = f"oracle-output-{config['sid']}"
-    else:
-        FILENAME = f"oracle-output-{config['service']}"
-
-    with open(FILENAME, "w", encoding="utf-8") as file:
-        # Write top entries that don't require connection to the database
-        file.writelines(top_entry_builder.create(config, EntryType.INSTANCE))
-        file.writelines("\n")
-        file.writelines(top_entry_builder.create(config, EntryType.DATABASE))
-
-        # Get schemas, write them and collect to the list
-        df_raw_schemas = connector.get_db_schemas()
-        schemas = [schema.USERNAME for schema in df_raw_schemas.select("USERNAME").collect()]
-        schemas_json = entry_builder.build_schemas(config, df_raw_schemas).toJSON().collect()
-
-        schemas_count = len(schemas_json)
-
-        write_jsonl(file, schemas_json)
-
-        # Ingest tables and views for every schema in a list
-        for schema in schemas:
-            print(f"Processing tables for {schema}")
-            tables_json = process_dataset(connector, config, schema, EntryType.TABLE)
-            entries_count += len(tables_json)
-            write_jsonl(file, tables_json)
-            print(f"Processing views for {schema}")
-            views_json = process_dataset(connector, config, schema, EntryType.VIEW)
-            entries_count += len(views_json)
-            write_jsonl(file, views_json)
-
-    print(f"{schemas_count + entries_count} rows written to file") 
-    gcs_uploader.upload(config, FILENAME,FOLDERNAME)
+    # Construct the full path for the log message
+    final_path = os.path.join(output_folder, f"aws-glue-output-{aws_region}.jsonl") if output_folder else f"aws-glue-output-{aws_region}.jsonl"
+    print(f"Successfully uploaded metadata for {len(databases)} databases to: gs://{gcs_bucket}/{final_path}")

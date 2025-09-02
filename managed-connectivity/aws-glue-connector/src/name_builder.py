@@ -1,83 +1,63 @@
-"""Builds Dataplex hierarchy identifiers."""
-from typing import Dict
 from src.constants import EntryType, SOURCE_TYPE
 
-
-# Oracle cluster users start with C## prefix, but Dataplex doesn't accept #.
-# In that case in names it is changed to C!!, and escaped with backticks in FQNs
-FORBIDDEN_SYMBOL = "#"
-ALLOWED_SYMBOL = "!"
-
-
-# Allow for using SID or Service name to connect
-def get_database(config: Dict[str, str]):
- if config['sid']:
-     return config['service']
- else:
-     return config['sid']
-
-def create_fqn(config: Dict[str, str], entry_type: EntryType,
-               schema_name: str = "", table_name: str = ""):
-    """Creates a fully qualified name or Dataplex v1 hierarchy name."""
-    if FORBIDDEN_SYMBOL in schema_name:
-        schema_name = f"`{schema_name}`"
-
-    if entry_type == EntryType.INSTANCE:
-        # Requires backticks to escape column
-        return f"{SOURCE_TYPE}:`{config['host']}`"
+def create_name(config, entry_type, db_name, asset_name=None):
+    """Creates the 'name' for a Dataplex entry within an Entry Group."""
+    project = config['project_id']
+    location = config['location_id']
+    entry_group = config['entry_group_id']
+    
+    # Sanitize all components used in the name to be valid resource IDs
+    db_name_sanitized = db_name.replace('-', '_')
+    
     if entry_type == EntryType.DATABASE:
-        instance = create_fqn(config, EntryType.INSTANCE)
-        return f"{instance}.{config['service']}"
-    if entry_type == EntryType.DB_SCHEMA:
-        database = create_fqn(config, EntryType.DATABASE)
-        return f"{get_database(config)}.{schema_name}"
+        return f"projects/{project}/locations/{location}/entryGroups/{entry_group}/entries/{db_name_sanitized}"
+    elif entry_type in [EntryType.TABLE, EntryType.VIEW]:
+        asset_name_sanitized = asset_name.replace('.', '_').replace('-', '_')
+        return f"projects/{project}/locations/{location}/entryGroups/{entry_group}/entries/{db_name_sanitized}_{asset_name_sanitized}"
+    raise ValueError(f"Invalid entry_type provided to name_builder: {entry_type}")
+
+def create_fqn(config, entry_type, db_name, asset_name=None):
+    """Creates the 'fully_qualified_name' with the correct AWS Glue format."""
+    system = SOURCE_TYPE # Should be 'aws_glue'
+    
+    # Get the required values from your config
+    aws_account_id = config.get('aws_account_id')
+    aws_region = config.get('aws_region')
+
+    if not aws_account_id or not aws_region:
+        raise ValueError("AWS Account ID and Region are missing from the configuration.")
+
+    # Sanitize the database name
+    db_name_sanitized = db_name.replace('-', '_')
+
+    # For DATABASE type FQN
+    if entry_type == EntryType.DATABASE:
+        # The FQN for a database is just its hierarchical path.
+        path = f"{aws_region}.{aws_account_id}.{db_name_sanitized}"
+        return f"{system}:{path}"
+
+    # For TABLE and VIEW type FQNs
     if entry_type in [EntryType.TABLE, EntryType.VIEW]:
-        database = create_fqn(config, EntryType.DATABASE)
-        return f"{get_database(config)}.{schema_name}.{table_name}"
-    return ""
+        asset_name_sanitized = asset_name.replace('-', '_')
+        # The FQN for a table MUST include the 'table:' prefix.
+        path = (f"table:{aws_region}.{aws_account_id}."
+                f"{db_name_sanitized}.{asset_name_sanitized}")
+        return f"{system}:{path}"
+
+    raise ValueError(f"Invalid entry_type provided to name_builder: {entry_type}")
 
 
-def create_name(config: Dict[str, str], entry_type: EntryType,
-                schema_name: str = "", table_name: str = ""):
-    """Creates a Dataplex v2 hierarchy name."""
-    if FORBIDDEN_SYMBOL in schema_name:
-        schema_name = schema_name.replace(FORBIDDEN_SYMBOL, ALLOWED_SYMBOL)
-    if entry_type == EntryType.INSTANCE:
-        name_prefix = (
-            f"projects/{config['target_project_id']}/"
-            f"locations/{config['target_location_id']}/"
-            f"entryGroups/{config['target_entry_group_id']}/"
-            f"entries/"
-        )
-        return name_prefix + config["host"].replace(":", "@")
-    if entry_type == EntryType.DATABASE:
-        instance = create_name(config, EntryType.INSTANCE)
-        return f"{instance}/databases/{get_database(config)}"
-    if entry_type == EntryType.DB_SCHEMA:
-        database = create_name(config, EntryType.DATABASE)
-        return f"{get_database(config)}/database_schemas/{schema_name}"
-    if entry_type == EntryType.TABLE:
-        db_schema = create_name(config, EntryType.DB_SCHEMA, schema_name)
-        return f"{db_schema}/tables/{table_name}"
-    if entry_type == EntryType.VIEW:
-        db_schema = create_name(config, EntryType.DB_SCHEMA, schema_name)
-        return f"{db_schema}/views/{table_name}"
-    return ""
+    # For TABLE and VIEW type FQNs
+    if entry_type in [EntryType.TABLE, EntryType.VIEW]:
+        asset_name_sanitized = asset_name.replace('-', '_')
+        path = (f"table:{aws_region}.{aws_account_id}."
+                f"{db_name_sanitized}.{asset_name_sanitized}")
+        return f"{system}:{path}"
 
+    raise ValueError(f"Invalid entry_type provided to name_builder: {entry_type}")
 
-def create_parent_name(config: Dict[str, str], entry_type: EntryType,
-                       parent_name: str = ""):
-    """Generates a Dataplex v2 name of the parent."""
-    if entry_type == EntryType.DATABASE:
-        return create_name(config, EntryType.INSTANCE)
-    if entry_type == EntryType.DB_SCHEMA:
-        return create_name(config, EntryType.DATABASE)
-    if entry_type == EntryType.TABLE:
-        return create_name(config, EntryType.DB_SCHEMA, parent_name)
-    return ""
-
-
-def create_entry_aspect_name(config: Dict[str, str], entry_type: EntryType):
-    """Generates an entry aspect name."""
-    last_segment = entry_type.value.split("/")[-1]
-    return f"{config['target_project_id']}.{config['target_location_id']}.{last_segment}"
+def create_parent_name(config, entry_type, db_name):
+    """Creates the 'parent_entry' name."""
+    if entry_type in [EntryType.TABLE, EntryType.VIEW]:
+        return create_name(config, EntryType.DATABASE, db_name)
+    return None

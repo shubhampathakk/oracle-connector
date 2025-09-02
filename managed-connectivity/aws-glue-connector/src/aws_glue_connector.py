@@ -1,63 +1,87 @@
 import boto3
+import re
 
 class AWSGlueConnector:
-    """A connector to fetch metadata from AWS Glue Data Catalog."""
-
     def __init__(self, aws_access_key_id, aws_secret_access_key, aws_region):
-        self.__glue_client = boto3.client(
-            'glue',
-            region_name=aws_region,
-            aws_access_key_id=aws_access_key_id,
-            aws_secret_access_key=aws_secret_access_key
-        )
+        self.access_key_id = self._clean_credential(aws_access_key_id)
+        self.secret_access_key = self._clean_credential(aws_secret_access_key)
+        self.region = aws_region.strip()
+        
+        try:
+            self.__glue_client = boto3.client(
+                'glue',
+                region_name=self.region,
+                aws_access_key_id=self.access_key_id,
+                aws_secret_access_key=self.secret_access_key
+            )
+        except Exception as e:
+            raise ValueError(f"Failed to create AWS Glue client: {e}")
+    
+    def _clean_credential(self, credential):
+        """Clean and validate credential string"""
+        if not credential:
+            raise ValueError("Empty credential provided")
+        cleaned = re.sub(r'[\r\n\t\s]', '', credential)
+        if not cleaned or len(cleaned) < 10:
+            raise ValueError("Invalid credential format")
+        return cleaned
 
-    def get_metadata(self, include_databases):
-        """
-        Fetches metadata from AWS Glue Data Catalog.
-
-        :param include_databases: A list of databases to include.
-        :return: A dictionary containing the metadata.
-        """
+    def get_databases(self, include_databases=None):
+        """Fetches metadata from AWS Glue Data Catalog."""
+        if include_databases is None:
+            include_databases = []
         metadata = {}
-        paginator = self.__glue_client.get_paginator('get_databases')
-        for page in paginator.paginate():
-            for db in page['DatabaseList']:
-                db_name = db['Name']
-                if db_name in include_databases:
-                    metadata[db_name] = self._get_tables(db_name)
+        try:
+            paginator = self.__glue_client.get_paginator('get_databases')
+            for page in paginator.paginate():
+                for db in page['DatabaseList']:
+                    db_name = db['Name']
+                    if not include_databases or db_name in include_databases:
+                        metadata[db_name] = self._get_tables(db_name)
+        except Exception as e:
+            raise RuntimeError(f"Failed to get databases from AWS Glue: {e}")
         return metadata
 
-    def _get_tables(self, database_name):
-        """
-        Fetches all tables for a given database.
-
-        :param database_name: The name of the database.
-        :return: A dictionary of tables.
-        """
-        tables = {}
-        paginator = self.__glue_client.get_paginator('get_tables')
-        for page in paginator.paginate(DatabaseName=database_name):
-            for table in page['TableList']:
-                table_name = table['Name']
-                tables[table_name] = {
-                    'description': table.get('Description', ''),
-                    'columns': self._get_columns(table)
-                }
+    def _get_tables(self, db_name):
+        """Fetches tables from a specific database."""
+        tables = []
+        try:
+            paginator = self.__glue_client.get_paginator('get_tables')
+            for page in paginator.paginate(DatabaseName=db_name):
+                tables.extend(page['TableList'])
+        except Exception as e:
+            raise RuntimeError(f"Failed to get tables from AWS Glue for database {db_name}: {e}")
         return tables
 
-    def _get_columns(self, table):
-        """
-        Extracts column information from a table dictionary.
+    def get_lineage_info(self):
+        """Fetches lineage information from AWS Glue jobs."""
+        lineage = {}
+        try:
+            paginator = self.__glue_client.get_paginator('get_jobs')
+            for page in paginator.paginate():
+                for job in page['Jobs']:
+                    job_name = job['Name']
+                    if 'Command' in job and 'ScriptLocation' in job['Command']:
+                        # This is where you would add logic to parse the ETL script
+                        # For now, we'll focus on jobs with defined sources and sinks
+                        pass
 
-        :param table: The table dictionary from the Glue API.
-        :return: A list of columns.
-        """
-        columns = []
-        if 'StorageDescriptor' in table and 'Columns' in table['StorageDescriptor']:
-            for column in table['StorageDescriptor']['Columns']:
-                columns.append({
-                    'name': column['Name'],
-                    'type': column.get('Type', ''),
-                    'description': column.get('Comment', '')
-                })
-        return columns
+                    if 'CodeGenConfigurationNodes' in job:
+                        nodes = job['CodeGenConfigurationNodes']
+                        sources = []
+                        sinks = []
+                        
+                        for node in nodes.values():
+                            if node['NodeType'] == 'DataSource':
+                                sources.append(node['DataSource']['Name'])
+                            elif node['NodeType'] == 'DataSink':
+                                sinks.append(node['DataSink']['Name'])
+                        
+                        if sources and sinks:
+                            for sink in sinks:
+                                if sink not in lineage:
+                                    lineage[sink] = []
+                                lineage[sink].extend(sources)
+        except Exception as e:
+            raise RuntimeError(f"Failed to get lineage info from AWS Glue jobs: {e}")
+        return lineage

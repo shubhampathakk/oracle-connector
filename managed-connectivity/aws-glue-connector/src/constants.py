@@ -1,17 +1,23 @@
 """Constants that are used in the different files."""
 import enum
 
-SOURCE_TYPE = "oracle"
+SOURCE_TYPE = "aws_glue"
 
-# Symbols for replacement
-FORBIDDEN = "#"
-ALLOWED = "!"
+# Short keys for the aspects map
+SCHEMA_ASPECT_KEY = "dataplex-types.global.schema"
+LINEAGE_ASPECT_KEY = "{project}.{location}.aws-lineage-aspect"
 
+# New keys for custom marker aspects
+DATABASE_ASPECT_KEY = "{project}.{location}.aws-glue-database"
+TABLE_ASPECT_KEY = "{project}.{location}.aws-glue-table"
+VIEW_ASPECT_KEY = "{project}.{location}.aws-glue-view"
+
+# Full paths for the aspect_type field
+SCHEMA_ASPECT_PATH = "projects/dataplex-types/locations/global/aspectTypes/schema"
+LINEAGE_ASPECT_PATH = "projects/{project}/locations/{location}/aspectTypes/aws-lineage-aspect"
 
 class EntryType(enum.Enum):
-    """Types of Oracle entries."""
-    INSTANCE: str = "projects/{project}/locations/{location}/entryTypes/oracle-instance"
-    DATABASE: str = "projects/{project}/locations/{location}/entryTypes/oracle-database"
-    DB_SCHEMA: str = "projects/{project}/locations/{location}/entryTypes/oracle-schema"
-    TABLE: str = "projects/{project}/locations/{location}/entryTypes/oracle-table"
-    VIEW: str = "projects/{project}/locations/{location}/entryTypes/oracle-view"
+    """Types of AWS Glue entries."""
+    DATABASE: str = "projects/{project}/locations/{location}/entryTypes/aws-glue-database"
+    TABLE: str = "projects/{project}/locations/{location}/entryTypes/aws-glue-table"
+    VIEW: str = "projects/{project}/locations/{location}/entryTypes/aws-glue-view"
