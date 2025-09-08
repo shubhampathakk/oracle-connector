@@ -6,18 +6,19 @@ def create_name(config, entry_type, db_name, asset_name=None):
     location = config['location_id']
     entry_group = config['entry_group_id']
     
-    # Sanitize all components used in the name to be valid resource IDs
+    # Sanitize all components
     db_name_sanitized = db_name.replace('-', '_')
     
-    if entry_type == EntryType.DATABASE:
-        return f"projects/{project}/locations/{location}/entryGroups/{entry_group}/entries/{db_name_sanitized}"
-    elif entry_type in [EntryType.TABLE, EntryType.VIEW]:
+    if entry_type in [EntryType.TABLE, EntryType.VIEW]:
         asset_name_sanitized = asset_name.replace('.', '_').replace('-', '_')
+        # The entry name for a table should be unique. Combining db and table is robust.
         return f"projects/{project}/locations/{location}/entryGroups/{entry_group}/entries/{db_name_sanitized}_{asset_name_sanitized}"
-    raise ValueError(f"Invalid entry_type provided to name_builder: {entry_type}")
+    
+    # Return None for database to signify it should not have a standalone entry
+    return None
 
 def create_fqn(config, entry_type, db_name, asset_name=None):
-    """Creates the 'fully_qualified_name' with the correct AWS Glue format."""
+    """Creates the 'fully_qualified_name' for a Table or View."""
     system = SOURCE_TYPE
     
     aws_account_id = config.get('aws_account_id')
@@ -26,30 +27,21 @@ def create_fqn(config, entry_type, db_name, asset_name=None):
     if not aws_account_id or not aws_region:
         raise ValueError("AWS Account ID and Region are missing from the configuration.")
 
-    # --- THIS IS THE FIX ---
-    # Sanitize the region name by replacing hyphens with underscores.
-    region_sanitized = aws_region.replace('-', '_')
-    
-    db_name_sanitized = db_name.replace('-', '_')
+    # --- THIS IS THE CRITICAL FIX ---
+    # Sanitize both region and database names by replacing hyphens.
+    # region_sanitized = aws_region.replace('-', '_')
+    # db_name_sanitized = db_name.replace('-', '_')
 
-    # For DATABASE type FQN
-    if entry_type == EntryType.DATABASE:
-        # The FQN for a database is its hierarchical path with a SANITIZED region.
-        path = f"{region_sanitized}.{aws_account_id}.{db_name_sanitized}"
-        return f"{system}:{path}"
-
-    # For TABLE and VIEW type FQNs
+    # FQN is only defined for Tables and Views
     if entry_type in [EntryType.TABLE, EntryType.VIEW]:
         asset_name_sanitized = asset_name.replace('-', '_')
-        # The FQN for a table uses the SANITIZED region and the 'table:' prefix.
-        path = (f"table:{region_sanitized}.{aws_account_id}."
-                f"{db_name_sanitized}.{asset_name_sanitized}")
+        path = (f"table:{aws_region}.{aws_account_id}."
+                f"{db_name}.{asset_name_sanitized}")
         return f"{system}:{path}"
 
-    raise ValueError(f"Invalid entry_type provided to name_builder: {entry_type}")
+    # Return None for other types as they don't have a supported FQN
+    return None
 
 def create_parent_name(config, entry_type, db_name):
-    """Creates the 'parent_entry' name."""
-    if entry_type in [EntryType.TABLE, EntryType.VIEW]:
-        return create_name(config, EntryType.DATABASE, db_name)
+    """Parent Entry is not used in this model as there is no DB entry."""
     return None

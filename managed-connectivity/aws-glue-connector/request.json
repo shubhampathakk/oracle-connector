@@ -8,16 +8,11 @@
     "scope": {
       "entry_groups": ["projects/gcve-demo-408018/locations/us-central1/entryGroups/aws-glue-assets"],
       "entry_types": [
-        "projects/gcve-demo-408018/locations/us-central1/entryTypes/aws-glue-database",
-        "projects/gcve-demo-408018/locations/us-central1/entryTypes/aws-glue-table",
-        "projects/gcve-demo-408018/locations/us-central1/entryTypes/aws-glue-view"
+        "projects/gcve-demo-408018/locations/us-central1/entryTypes/aws-glue-table"
       ],
       "aspect_types": [
         "projects/dataplex-types/locations/global/aspectTypes/schema",
-        "projects/gcve-demo-408018/locations/us-central1/aspectTypes/aws-lineage-aspect",
-        "projects/gcve-demo-408018/locations/us-central1/aspectTypes/aws-glue-database",
-        "projects/gcve-demo-408018/locations/us-central1/aspectTypes/aws-glue-table",
-        "projects/gcve-demo-408018/locations/us-central1/aspectTypes/aws-glue-view"
+        "projects/gcve-demo-408018/locations/us-central1/aspectTypes/aws-glue-table"
       ]
     }
   }
