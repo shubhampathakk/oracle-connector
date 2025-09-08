@@ -6,7 +6,7 @@ class AWSGlueConnector:
         self.access_key_id = self._clean_credential(aws_access_key_id)
         self.secret_access_key = self._clean_credential(aws_secret_access_key)
         self.region = aws_region.strip()
-        
+
         try:
             self.__glue_client = boto3.client(
                 'glue',
@@ -16,7 +16,7 @@ class AWSGlueConnector:
             )
         except Exception as e:
             raise ValueError(f"Failed to create AWS Glue client: {e}")
-    
+
     def _clean_credential(self, credential):
         """Clean and validate credential string"""
         if not credential:
@@ -55,46 +55,37 @@ class AWSGlueConnector:
 
     def get_lineage_info(self):
         """
-        Scans AWS Glue jobs to derive lineage information.
-        
-        Returns:
-            A dictionary mapping target table names to a list of their source table names.
-            Example: {'target_table_a': ['source_table_x', 'source_table_y']}
+        Scans AWS Glue jobs to derive lineage information by inspecting job run graphs.
+        Returns a dictionary mapping target table names to a list of their source table names.
         """
         lineage_map = {}
-        paginator = self.glue_client.get_paginator('get_jobs')
+        paginator = self.__glue_client.get_paginator('get_jobs')
 
         print("Fetching lineage info from AWS Glue jobs...")
         try:
             for page in paginator.paginate():
                 for job in page['Jobs']:
                     job_name = job['Name']
-                    job_details = self.glue_client.get_job(JobName=job_name)
-                    
-                    sources = []
-                    targets = []
-
-                    # Extract sources and targets from the job's connections/arguments
-                    # This logic might need to be adapted based on your specific job setup
-                    if 'Connections' in job_details['Job'] and 'Connections' in job_details['Job']['Connections']:
-                        # A simplified logic assuming connection names relate to tables
-                        # In a real-world scenario, you might parse DefaultArguments
-                        pass # Add logic here to find source/target tables
-
-                    # For this example, let's assume we found a simple source/target pair
-                    # In your real implementation, you would derive this dynamically
-                    # Example:
-                    # if job_name == 'job_that_creates_employees_summary':
-                    #     sources = ['employees', 'departments']
-                    #     targets = ['employees_summary']
-
-                    for target_table in targets:
-                        if target_table not in lineage_map:
-                            lineage_map[target_table] = []
-                        lineage_map[target_table].extend(sources)
-
+                    job_runs = self.__glue_client.get_job_runs(JobName=job_name)
+                    for job_run in job_runs.get('JobRuns', []):
+                        if job_run.get('JobRunState') == 'SUCCEEDED':
+                            graph = self.__glue_client.get_dataflow_graph(PythonScript=job['Command']['ScriptLocation'])
+                            if graph:
+                                sources = [edge['Source'] for edge in graph.get('Edges', [])]
+                                targets = [edge['Target'] for edge in graph.get('Edges', [])]
+                                for i, target_id in enumerate(targets):
+                                    target_node = next((node for node in graph.get('Nodes', []) if node['Id'] == target_id), None)
+                                    if target_node and target_node['NodeType'] == 'DataSink':
+                                        target_table_name = target_node.get('Name')
+                                        source_id = sources[i]
+                                        source_node = next((node for node in graph.get('Nodes', []) if node['Id'] == source_id), None)
+                                        if source_node and source_node['NodeType'] == 'DataSource':
+                                            source_table_name = source_node.get('Name')
+                                            if target_table_name not in lineage_map:
+                                                lineage_map[target_table_name] = []
+                                            lineage_map[target_table_name].append(source_table_name)
         except Exception as e:
             print(f"Warning: Could not fetch lineage information. Error: {e}")
-        
+
         print(f"Found {len(lineage_map)} lineage relationships.")
         return lineage_map

@@ -1,4 +1,5 @@
-boto3>=1.34.0
 google-cloud-dataplex>=2.4.0
+boto3
+google-cloud-secretmanager
 google-cloud-storage
-google-cloud-secret-manager
+pyspark==3.5.0

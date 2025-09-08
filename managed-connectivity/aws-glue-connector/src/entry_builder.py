@@ -49,7 +49,7 @@ def build_dataset_entry(config, db_name, table_info, job_lineage):
     table_type = table_info.get('TableType')
 
     entry_type = EntryType.VIEW if table_type == 'VIRTUAL_VIEW' else EntryType.TABLE
-    
+
     # --- Build Schema Aspect ---
     columns = []
     if 'StorageDescriptor' in table_info and 'Columns' in table_info['StorageDescriptor']:
@@ -86,7 +86,7 @@ def build_dataset_entry(config, db_name, table_info, job_lineage):
 
     if table_name in job_lineage:
         source_assets.extend(job_lineage[table_name])
-    
+
     if source_assets:
         full_lineage_aspect_path = LINEAGE_ASPECT_PATH.format(
             project=config["project_id"],
